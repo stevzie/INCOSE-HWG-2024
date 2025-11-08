@@ -3,12 +3,13 @@ Presentation from the 9th Annual Systems Engineering in Healthcare Conference
 
 ## Excel File Upload to Claude API
 
-Python utility for uploading Excel files to Claude AI (Sonnet) via the Anthropic API in base64 format. This allows you to send Excel spreadsheets to Claude for analysis, summarization, data extraction, and other AI-powered tasks.
+Python utility for uploading Excel files to Claude AI (Sonnet) via the Anthropic **Files API**. This allows you to send Excel spreadsheets to Claude for analysis, summarization, data extraction, and other AI-powered tasks.
 
 ### Features
 
-- Upload Excel files (.xlsx, .xls, .xlsm) to Claude API in base64 format
-- Automatic base64 encoding of Excel files
+- Upload Excel files (.xlsx, .xls, .xlsm) to Claude API using the Files API
+- Get reusable file IDs for efficient multiple queries on the same file
+- Automatic file caching to avoid re-uploading
 - Support for multiple Claude models (Sonnet 4, Opus, etc.)
 - Simple function-based and class-based interfaces
 - Comprehensive error handling
@@ -65,7 +66,7 @@ response = upload_excel_to_claude(
 print(response)
 ```
 
-#### Python Code - Advanced Usage
+#### Python Code - Advanced Usage (Upload Once, Query Multiple Times)
 
 ```python
 from excel_to_claude import ExcelToClaudeUploader
@@ -73,21 +74,33 @@ from excel_to_claude import ExcelToClaudeUploader
 # Initialize uploader
 uploader = ExcelToClaudeUploader(api_key="your-api-key")
 
-# Upload Excel file with custom settings
-response = uploader.upload_excel_with_prompt(
-    excel_file_path="data.xlsx",
-    prompt="What trends do you see in this data?",
-    model="claude-sonnet-4-20250514",
-    max_tokens=4096
-)
+# Step 1: Upload file and get file_id
+file_id = uploader.upload_file("data.xlsx")
+print(f"File ID: {file_id}")
 
-# Get text response
-text = uploader.get_response_text(response)
-print(text)
+# Step 2: Query the file multiple times using the file_id
+questions = [
+    "What trends do you see in this data?",
+    "What are the column names?",
+    "How many rows are there?"
+]
 
-# Access token usage
-print(f"Input tokens: {response['usage']['input_tokens']}")
-print(f"Output tokens: {response['usage']['output_tokens']}")
+for question in questions:
+    response = uploader.send_message_with_file(
+        file_id=file_id,
+        prompt=question,
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024
+    )
+
+    # Get text response
+    text = uploader.get_response_text(response)
+    print(f"Q: {question}")
+    print(f"A: {text}\n")
+
+    # Access token usage
+    print(f"Tokens: {response['usage']['input_tokens']} in, "
+          f"{response['usage']['output_tokens']} out\n")
 ```
 
 ### Usage Examples
@@ -95,11 +108,13 @@ print(f"Output tokens: {response['usage']['output_tokens']}")
 The `example_usage.py` file contains comprehensive examples including:
 
 1. **Simple usage** - Quick upload and response
-2. **Class-based usage** - More control over the process
-3. **Data analysis tasks** - Multiple prompts for analysis
-4. **Multiple files** - Process several Excel files
-5. **Base64 encoding only** - Get base64 without sending to API
-6. **Different models** - Compare responses from different Claude models
+2. **Upload once, query multiple times** - Efficient file ID reuse
+3. **Full response details** - Access metadata and token usage
+4. **Automatic file caching** - Avoid re-uploading same files
+5. **Manual file ID reuse** - Explicitly pass file IDs
+6. **Multiple files** - Process several Excel files
+7. **Different models** - Compare responses from different Claude models
+8. **Error handling** - Proper exception handling
 
 Run examples:
 ```bash
@@ -125,9 +140,15 @@ Convenience function to upload Excel and get Claude's response.
 **Methods:**
 
 - `__init__(api_key=None)` - Initialize with API key
-- `encode_excel_to_base64(file_path)` - Encode Excel to base64
-- `upload_excel_with_prompt(excel_file_path, prompt, model, max_tokens)` - Upload and get response
+- `upload_file(file_path)` - Upload Excel file to Files API, returns `file_id`
+- `send_message_with_file(file_id, prompt, model, max_tokens)` - Send message using existing file_id
+- `upload_excel_with_prompt(excel_file_path, prompt, model, max_tokens, reuse_file_id=None)` - All-in-one: upload and query
 - `get_response_text(response)` - Extract text from response
+
+**Key Features:**
+- Automatic file caching prevents re-uploading the same file
+- File IDs can be reused across multiple queries
+- Returns file_id in response for manual reuse
 
 ### Supported Excel Formats
 
@@ -198,10 +219,19 @@ The library handles common errors:
 
 ### Notes
 
-- Excel files are converted to base64 before being sent to Claude
+- **Files API**: Excel files are uploaded to Claude's Files API and referenced by file_id
+- **File Reuse**: Upload once, query multiple times with the same file_id for efficiency
+- **Automatic Caching**: The same file won't be re-uploaded within a session
+- **Beta Feature**: Uses the Files API beta header `files-api-2025-04-14`
 - Claude can analyze the structure and content of Excel files
 - Response quality depends on the complexity of your prompt
 - Token usage varies based on file size and response length
+
+### How It Works
+
+1. **Upload**: File is uploaded to `/v1/files` endpoint → returns `file_id`
+2. **Query**: Messages reference the `file_id` instead of sending file data
+3. **Efficiency**: Reuse the same `file_id` for multiple questions about the same file
 
 ### License
 

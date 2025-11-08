@@ -1,18 +1,20 @@
 """
-Upload Excel files to Claude API (Sonnet) in base64 format
+Upload Excel files to Claude API using the Files API
 """
 
-import base64
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 from anthropic import Anthropic
 
 
 class ExcelToClaudeUploader:
     """
-    A class to handle uploading Excel files to Claude API in base64 format
+    A class to handle uploading Excel files to Claude API using the Files API
     """
+
+    # Beta header for Files API
+    FILES_API_BETA_HEADER = "files-api-2025-04-14"
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -28,16 +30,18 @@ class ExcelToClaudeUploader:
             )
 
         self.client = Anthropic(api_key=self.api_key)
+        # Store uploaded file IDs for reuse
+        self._file_cache: Dict[str, str] = {}
 
-    def encode_excel_to_base64(self, file_path: str) -> tuple[str, str]:
+    def validate_excel_file(self, file_path: str) -> Path:
         """
-        Read and encode an Excel file to base64
+        Validate that the file exists and is a supported Excel format
 
         Args:
             file_path: Path to the Excel file
 
         Returns:
-            Tuple of (base64_encoded_data, media_type)
+            Path object
 
         Raises:
             FileNotFoundError: If file doesn't exist
@@ -48,41 +52,66 @@ class ExcelToClaudeUploader:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        # Determine media type based on extension
+        # Check file extension
         extension = file_path.suffix.lower()
-        media_type_map = {
-            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            '.xls': 'application/vnd.ms-excel',
-            '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12'
-        }
+        supported_formats = {'.xlsx', '.xls', '.xlsm'}
 
-        if extension not in media_type_map:
+        if extension not in supported_formats:
             raise ValueError(
                 f"Unsupported file format: {extension}. "
-                f"Supported formats: {', '.join(media_type_map.keys())}"
+                f"Supported formats: {', '.join(supported_formats)}"
             )
 
-        media_type = media_type_map[extension]
+        return file_path
 
-        # Read and encode the file
-        with open(file_path, 'rb') as file:
-            file_data = file.read()
-            base64_encoded = base64.standard_b64encode(file_data).decode('utf-8')
+    def upload_file(self, file_path: str) -> str:
+        """
+        Upload an Excel file to Claude's Files API and get a file_id
 
-        return base64_encoded, media_type
+        Args:
+            file_path: Path to the Excel file
 
-    def upload_excel_with_prompt(
+        Returns:
+            file_id string that can be used to reference the file
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If file format is not supported
+        """
+        # Validate the file
+        validated_path = self.validate_excel_file(file_path)
+
+        # Check if already uploaded (cache check)
+        cache_key = str(validated_path.absolute())
+        if cache_key in self._file_cache:
+            return self._file_cache[cache_key]
+
+        # Upload the file to Files API
+        with open(validated_path, 'rb') as file:
+            file_response = self.client.files.create(
+                file=file,
+                purpose="user_upload"
+            )
+
+        file_id = file_response.id
+
+        # Cache the file_id
+        self._file_cache[cache_key] = file_id
+
+        return file_id
+
+    def send_message_with_file(
         self,
-        excel_file_path: str,
+        file_id: str,
         prompt: str,
         model: str = "claude-sonnet-4-20250514",
         max_tokens: int = 4096
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """
-        Upload an Excel file to Claude API with a prompt
+        Send a message to Claude with a file reference
 
         Args:
-            excel_file_path: Path to the Excel file
+            file_id: The file ID returned from upload_file()
             prompt: The prompt/question to ask Claude about the Excel file
             model: Claude model to use (default: claude-sonnet-4-20250514)
             max_tokens: Maximum tokens for the response
@@ -90,13 +119,11 @@ class ExcelToClaudeUploader:
         Returns:
             Dictionary containing the response from Claude API
         """
-        # Encode the Excel file
-        base64_data, media_type = self.encode_excel_to_base64(excel_file_path)
-
-        # Create the message with document content
+        # Create message with file reference
         message = self.client.messages.create(
             model=model,
             max_tokens=max_tokens,
+            betas=[self.FILES_API_BETA_HEADER],
             messages=[
                 {
                     "role": "user",
@@ -104,9 +131,8 @@ class ExcelToClaudeUploader:
                         {
                             "type": "document",
                             "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_data
+                                "type": "file",
+                                "file_id": file_id
                             }
                         },
                         {
@@ -126,15 +152,46 @@ class ExcelToClaudeUploader:
                 "input_tokens": message.usage.input_tokens,
                 "output_tokens": message.usage.output_tokens
             },
-            "stop_reason": message.stop_reason
+            "stop_reason": message.stop_reason,
+            "file_id": file_id  # Include file_id for reference
         }
 
-    def get_response_text(self, response: dict) -> str:
+    def upload_excel_with_prompt(
+        self,
+        excel_file_path: str,
+        prompt: str,
+        model: str = "claude-sonnet-4-20250514",
+        max_tokens: int = 4096,
+        reuse_file_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Upload an Excel file and send it to Claude with a prompt (all-in-one method)
+
+        Args:
+            excel_file_path: Path to the Excel file
+            prompt: The prompt/question to ask Claude about the Excel file
+            model: Claude model to use (default: claude-sonnet-4-20250514)
+            max_tokens: Maximum tokens for the response
+            reuse_file_id: Optional file_id to reuse instead of uploading again
+
+        Returns:
+            Dictionary containing the response from Claude API
+        """
+        # Upload file if no file_id provided
+        if reuse_file_id:
+            file_id = reuse_file_id
+        else:
+            file_id = self.upload_file(excel_file_path)
+
+        # Send message with the file
+        return self.send_message_with_file(file_id, prompt, model, max_tokens)
+
+    def get_response_text(self, response: Dict[str, Any]) -> str:
         """
         Extract text content from Claude API response
 
         Args:
-            response: Response dictionary from upload_excel_with_prompt
+            response: Response dictionary from upload_excel_with_prompt or send_message_with_file
 
         Returns:
             Extracted text content
